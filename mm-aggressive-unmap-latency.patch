@@ -1,0 +1,24 @@
+diff --git a/mm/memory.c b/mm/memory.c
+index a519d94700c3..b25fa8f4dc4b 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1340,6 +1340,12 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 	pte_t *pte;
+ 	gfp_t gfpflags = __GFP_HIGH;
+ 
++	/* Game Mode Latency Bypass: Avoid TLB flush yields during aggressive rendering */
++	if (current->mm && (current->flags & PF_MEMALLOC_NORECLAIM)) {
++		tlb->fullmm = 1; /* Force batching without intermediate stalls */
++		goto skip_stalls;
++	}
++
+ 	arch_enter_lazy_mmu_mode();
+ 	pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
+ 	do {
+@@ -1355,6 +1361,7 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 	pte_unmap_unlock(pte, ptl);
+ 	arch_leave_lazy_mmu_mode();
+ 
++skip_stalls:
+ 	return addr;
+ }
