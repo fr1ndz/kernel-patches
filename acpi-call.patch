@@ -1,0 +1,239 @@
+#define BUILDING_ACPICA
+
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/version.h>
+#include <linux/proc_fs.h>
+#include <linux/uaccess.h>
+#include <linux/acpi.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("aemmeath/fr1ndz");
+MODULE_DESCRIPTION("Low Latency Zero-Allocation ACPI Call Driver");
+MODULE_VERSION("3.0-Xtreme");
+
+#define BUFFER_SIZE 4096
+#define MAX_ACPI_ARGS 8
+
+extern struct proc_dir_entry *acpi_root_dir;
+static DEFINE_RAW_SPINLOCK(buffer_lock);
+
+/* Статичні пер-процесорні буфери (Zero-Allocation) */
+static char global_input_buffer[BUFFER_SIZE];
+static char global_result_buffer[BUFFER_SIZE];
+static union acpi_object global_args_pool[MAX_ACPI_ARGS];
+static size_t result_len = 0;
+
+static const char not_called_message[] = "not called\n";
+
+static size_t get_avail_bytes(size_t current_len) {
+    return (current_len >= BUFFER_SIZE) ? 0 : BUFFER_SIZE - current_len;
+}
+
+static int acpi_result_to_string(union acpi_object *result, char *buf, size_t *offset) {
+    if (!result) return 1;
+    
+    size_t avail = get_avail_bytes(*offset);
+    if (!avail) return 1;
+
+    if (result->type == ACPI_TYPE_INTEGER) {
+        *offset += snprintf(buf + *offset, avail, "0x%llx", (unsigned long long)result->integer.value);
+    } else if (result->type == ACPI_TYPE_STRING) {
+        *offset += snprintf(buf + *offset, avail, "\"%*s\"", result->string.length, result->string.pointer);
+    } else if (result->type == ACPI_TYPE_BUFFER) {
+        int i;
+        int show_values = min((size_t)result->buffer.length, avail / 6);
+        
+        *offset += snprintf(buf + *offset, avail, "{");
+        for (i = 0; i < show_values; i++) {
+            avail = get_avail_bytes(*offset);
+            *offset += snprintf(buf + *offset, avail, i == 0 ? "0x%02x" : ", 0x%02x", result->buffer.pointer[i]);
+        }
+        avail = get_avail_bytes(*offset);
+        *offset += snprintf(buf + *offset, avail, "}");
+    } else if (result->type == ACPI_TYPE_PACKAGE) {
+        int i;
+        *offset += snprintf(buf + *offset, avail, "[");
+        for (i = 0; i < result->package.count; i++) {
+            if (i > 0) {
+                avail = get_avail_bytes(*offset);
+                *offset += snprintf(buf + *offset, avail, ", ");
+            }
+            if (acpi_result_to_string(&result->package.elements[i], buf, offset)) return 1;
+        }
+        avail = get_avail_bytes(*offset);
+        *offset += snprintf(buf + *offset, avail, "]");
+    } else {
+        *offset += snprintf(buf + *offset, avail, "Type:0x%x", result->type);
+    }
+    return 0;
+}
+
+/* Виконання ACPI виклику */
+static void do_acpi_call(const char *method, int argc, union acpi_object *argv) {
+    acpi_status status;
+    acpi_handle handle;
+    struct acpi_object_list arg;
+    struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+    size_t write_pos = 0;
+
+    status = acpi_get_handle(NULL, (acpi_string)method, &handle);
+    if (ACPI_FAILURE(status)) {
+        raw_spin_lock(&buffer_lock);
+        result_len = snprintf(global_result_buffer, BUFFER_SIZE, "Error: %s", acpi_format_exception(status));
+        raw_spin_unlock(&buffer_lock);
+        return;
+    }
+
+    arg.count = argc;
+    arg.pointer = argv;
+
+    status = acpi_evaluate_object(handle, NULL, &arg, &buffer);
+    
+    // Захоплюємо спінлок на мінімальний час копіювання результату
+    raw_spin_lock(&buffer_lock);
+    if (ACPI_FAILURE(status)) {
+        result_len = snprintf(global_result_buffer, BUFFER_SIZE, "Error: %s", acpi_format_exception(status));
+    } else {
+        global_result_buffer[0] = '\0';
+        acpi_result_to_string(buffer.pointer, global_result_buffer, &write_pos);
+        result_len = write_pos;
+        kfree(buffer.pointer);
+    }
+    raw_spin_unlock(&buffer_lock);
+}
+
+static char *parse_acpi_args_pure(char *input, int *nargs, union acpi_object **args) {
+    char *s = input;
+    char *method = input;
+    bool in_space = false;
+
+    *nargs = 0;
+    *args = global_args_pool;
+    memset(global_args_pool, 0, sizeof(global_args_pool));
+
+    // Шукаємо кінець назви методу (перший пробіл)
+    while (*s && *s != ' ') s++;
+    if (*s == 0) return method; // Аргументів немає
+
+    *s = '\0'; // Ізолюємо назву методу
+    s++;
+
+    while (*s) {
+        // Пропускаємо будь-яку кількість зайвих пробілів (Рішення проблеми подвійних пробілів)
+        if (*s == ' ') {
+            in_space = true;
+            s++;
+            continue;
+        }
+
+        if (in_space || *nargs == 0) {
+            if (*nargs >= MAX_ACPI_ARGS) break;
+            (*nargs)++;
+            in_space = false;
+        }
+
+        union acpi_object *arg = (*args) + (*nargs - 1);
+
+        if (*s == '"') { // Обробка рядка
+            arg->type = ACPI_TYPE_STRING;
+            arg->string.pointer = ++s;
+            while (*s && *s != '"') {
+                arg->string.length++;
+                s++;
+            }
+            if (*s == '"') {
+                *s = '\0';
+                s++;
+            }
+        } else { // Обробка числа (Hex або Dec)
+            long val;
+            char *endptr;
+            arg->type = ACPI_TYPE_INTEGER;
+            if (s[0] == '0' && s[1] == 'x') {
+                val = simple_strtol(s + 2, &endptr, 16);
+            } else {
+                val = simple_strtol(s, &endptr, 10);
+            }
+            arg->integer.value = val;
+            s = endptr;
+        }
+    }
+    return method;
+}
+
+static ssize_t acpi_proc_write(struct file *filp, const char __user *buff, size_t len, loff_t *data) {
+    int nargs;
+    union acpi_object *args;
+    char *method;
+    
+    if (len >= BUFFER_SIZE || len == 0) return -ENOSPC;
+
+    // Швидка ізольована копія з простору користувача без блокування ядра
+    if (copy_from_user(global_input_buffer, buff, len)) return -EFAULT;
+    global_input_buffer[len] = '\0';
+    if (len > 0 && global_input_buffer[len - 1] == '\n') global_input_buffer[len - 1] = '\0';
+
+    // Парсинг повністю Lock-Free
+    method = parse_acpi_args_pure(global_input_buffer, &nargs, &args);
+    
+    if (method && *method) {
+        do_acpi_call(method, nargs, args);
+    } else {
+        return -EINVAL;
+    }
+
+    return len;
+}
+
+static ssize_t acpi_proc_read(struct file *filp, char __user *buff, size_t count, loff_t *off) {
+    ssize_t ret;
+    size_t local_len;
+    
+    raw_spin_lock(&buffer_lock);
+    local_len = result_len;
+    
+    if (local_len == 0) {
+        raw_spin_unlock(&buffer_lock);
+        return simple_read_from_buffer(buff, count, off, not_called_message, strlen(not_called_message));
+    }
+
+    // Читаємо дані безпечно
+    ret = simple_read_from_buffer(buff, count, off, global_result_buffer, local_len);
+    
+    // Якщо користувач прочитав весь буфер, скидаємо довжину в 0 атомарно
+    if (*off >= local_len) {
+        result_len = 0;
+        global_result_buffer[0] = '\0';
+    }
+    raw_spin_unlock(&buffer_lock);
+
+    return ret;
+}
+
+static const struct proc_ops proc_acpi_operations = {
+    .proc_read = acpi_proc_read,
+    .proc_write = acpi_proc_write,
+    .proc_lseek = default_llseek,
+};
+
+static int __init init_acpi_call(void) {
+    struct proc_dir_entry *acpi_entry;
+    
+    // Тільки Root доступ (0400/0600) — захист від атак модифікації планів живлення
+    acpi_entry = proc_create("call", 0600, acpi_root_dir, &proc_acpi_operations);
+    if (!acpi_entry) return -ENOMEM;
+
+    memset(global_result_buffer, 0, BUFFER_SIZE);
+    result_len = 0;
+    return 0;
+}
+
+static void __exit unload_acpi_call(void) {
+    remove_proc_entry("call", acpi_root_dir);
+}
+
+module_init(init_acpi_call);
+module_exit(unload_acpi_call);
