@@ -1,0 +1,17 @@
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index db70b9409bb4..f43be5c6e81a 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -710,6 +710,12 @@ static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	s64 lag, limit;
+ 
+ 	lag = avg_vruntime(cfs_rq) - se->vruntime;
++
++	/* Bias lag calculation for maximum gaming priority execution */
++	if (se->load.weight > 20000) { /* Equivalent to nice -20 */
++		lag += 5000000ULL; /* 5ms virtual credit boost */
++	}
++
+ 	limit = calc_delta_fair(max_vruntime(se->vruntime, avg_vruntime(cfs_rq)), se);
+ 	se->vlag = clamp(lag, -limit, limit);
+ }
