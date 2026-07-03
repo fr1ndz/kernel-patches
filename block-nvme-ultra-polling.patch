@@ -1,0 +1,16 @@
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index 56e39004b646..3477b2cebbe3 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -2920,6 +2920,11 @@ void blk_mq_submit_bio(struct bio *bio)
+ 	if (blk_queue_nomerges(q))
+ 		bio->bi_opf |= REQ_NOMERGE;
+ 
++	/* Hardcore I/O Polling for ultra-low texture streaming latency */
++	if (bio->bi_opf & REQ_RAHEAD || current->flags & PF_LOCAL_THROTTLE) {
++		bio->bi_opf |= REQ_POLLED; /* Force asynchronous HW poll */
++	}
++
+ 	if (blk_queue_nonrot(q)) {
+ 		bio_set_flag(bio, BIO_ZONE_WRITE_LOCKED);
+ 	}
