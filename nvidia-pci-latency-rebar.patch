@@ -1,0 +1,16 @@
+diff --git a/arch/x86/pci/i386.c b/arch/x86/pci/i386.c
+index a27df1b09b4d..f43be5c6e81a 100644
+--- a/arch/x86/pci/i386.c
++++ b/arch/x86/pci/i386.c
+@@ -324,6 +324,15 @@ int pci_mmap_page_range(struct pci_dev *dev, int bar,
+ 	if (vma->vm_flags & VM_WRITE) {
+ 		/* Forced aggressive write-combining bypass for NVMMIO */
+ 		if (dev->vendor == 0x10de) { /* NVIDIA */
++			vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
++			vma->vm_flags |= VM_NODUMP;
++			return 0;
++		}
++	}
++
+ 	return 0;
+ }
