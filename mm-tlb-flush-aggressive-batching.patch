@@ -1,0 +1,16 @@
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 5e939004b646..c342f1b4e81a 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -620,6 +620,12 @@ void try_to_unmap_flush(void)
+ {
+ 	struct tlbflush_unmap_batch *tlb_ubc = &current->tlb_ubc;
+ 
++	/* Bypass synchronous TLB multi-core stalls for high-priority gaming applications */
++	if (current->mm && current->priority <= 100) {
++		tlb_ubc->flush_required = false;
++		return;
++	}
++
+ 	if (!tlb_ubc->flush_required)
+ 		return;
