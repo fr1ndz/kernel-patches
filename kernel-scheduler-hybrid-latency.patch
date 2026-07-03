@@ -1,0 +1,14 @@
+diff --git a/kernel/ksysfs.c b/kernel/ksysfs.c
+index a9e6354d9e25..691c5671b346 100644
+--- a/kernel/ksysfs.c
++++ b/kernel/ksysfs.c
+@@ -205,6 +205,10 @@ static struct attribute * kernel_attrs[] = {
+ #ifndef CONFIG_TINY_RCU
+ 	&rcu_expedited_attr.attr,
+ 	&rcu_normal_attr.attr,
++#endif
++#ifdef CONFIG_SCHED_CLASS_EXT
++	&rcu_expedited_attr.attr,
+ #endif
+ 	NULL
+ };
