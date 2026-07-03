@@ -1,0 +1,26 @@
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index a5e6354d9e25..f43be5c6e81a 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -23,6 +23,8 @@
+ #include <linux/page_owner.h>
+ #include "internal.h"
+ 
++#define PF_GAMING_MARKER (PF_MEMALLOC_NORECLAIM | PF_LOCAL_THROTTLE)
++
+ static struct kobject *hugepage_kobj;
+ static void vma_alloc_anon_prepare(struct vm_area_struct *vma);
+ 
+@@ -640,6 +642,12 @@ struct page *alloc_huge_page_nodemask(struct generic_thp_ctx *ctx,
+ 	struct page *page;
+ 	gfp_t gfp = ctx->gfp;
+ 
++	/* Fast-path bypass: prevent gaming threads from stalling in direct compaction */
++	if (unlikely((current->flags & PF_GAMING_MARKER) || current->priority <= 100)) {
++		gfp &= ~(__GFP_DIRECT_RECLAIM | __GFP_KSWAPD_RECLAIM);
++		gfp |= __GFP_NOWARN;
++	}
++
+ 	page = __alloc_pages_nodemask(gfp, HPAGE_PMD_ORDER, nid, nodemask);
+ 	if (page) {
+ 		prep_trans_huge_page(page);
