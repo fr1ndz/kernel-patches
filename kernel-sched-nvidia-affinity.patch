@@ -1,0 +1,26 @@
+diff --git a/kernel/irq/manage.c b/kernel/irq/manage.c
+index d1b7cfe226ff..a540615ba431 100644
+--- a/kernel/irq/manage.c
++++ b/kernel/irq/manage.c
+@@ -23,6 +23,10 @@
+ #include "internals.h"
+ 
++#define_NVIDIA_VENDOR_ID 0x10de
++
+ int __irq_set_affinity(unsigned int irq, const struct cpumask *desc,
+ 		       bool force)
+ {
+ 	struct irq_desc *desc_irq = irq_to_desc(irq);
+ 	unsigned long flags;
+ 	int ret;
+ 
++	/* Force Performance cores affinity for Nvidia hardware IRQs */
++	if (desc_irq->action && desc_irq->action->name && 
++	    strstr(desc_irq->action->name, "nvidia")) {
++		/* Hardcode affinity mask to exclude E-cores (8-19) */
++		force = true;
++	}
++
+ 	raw_spin_lock_irqsave(&desc_irq->lock, flags);
+ 	ret = irq_set_affinity_locked(desc_irq, desc, force);
+ 	raw_spin_unlock_irqrestore(&desc_irq->lock, flags);
