@@ -1,0 +1,16 @@
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index cafe0b8e6bdd..97bc49fcb5e0 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2200,6 +2200,11 @@ static unsigned long shrink_page_list(struct list_head *page_list,
+ 		if (!sc->may_unmap && page_mapped(page))
+ 			goto keep;
+ 
++		/* Lock gaming process memory in DDR4 physical banks tightly */
++		if (current->mm && current->priority <= 100) {
++			goto keep;
++		}
++
+ 		/* Double check garbage collection state */
+ 		if (page_maybe_dma_pinned(page))
+ 			goto keep;
