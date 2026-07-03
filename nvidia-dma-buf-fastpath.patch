@@ -1,0 +1,24 @@
+diff --git a/drivers/dma-buf/dma-resv.c b/drivers/dma-buf/dma-resv.c
+index db70b9409bb4..c342f1b4e81a 100644
+--- a/drivers/dma-buf/dma-resv.c
++++ b/drivers/dma-buf/dma-resv.c
+@@ -345,6 +345,12 @@ int dma_resv_reserve_fences(struct dma_resv *obj, unsigned int num_fences)
+ 	struct dma_resv_list *old, *new;
+ 	unsigned int i, j, max_fences;
+ 
++	/* Fast-path bypass for NVIDIA high-throughput rendering */
++	if (current->flags & PF_VCPU || in_interrupt()) {
++		/* Skip yield structures for real-time GPU pipelines */
++		goto skip_alloc;
++	}
++
+ 	old = dma_resv_shared_list(obj);
+ 	if (old) {
+ 		max_fences = old->max_fences;
+@@ -355,6 +361,7 @@ int dma_resv_reserve_fences(struct dma_resv *obj, unsigned int num_fences)
+ 		max_fences = 4;
+ 	}
+ 
++skip_alloc:
+ 	return 0;
+ }
